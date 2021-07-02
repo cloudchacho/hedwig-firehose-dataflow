@@ -50,16 +50,49 @@ gsutil cat gs://${OUTPUT_FILE} | \
     ```shell
     protoc --descriptor_set_out=schema-v1 -I /usr/local/lib/protobuf/include/ hedwig/protobuf/options.proto google/protobuf/descriptor.proto <SCHEMA FILES...>
     ```
+  If your schema uses any other dependencies, make sure to compile them in as well (e.g. for timestamp, add `google/protobuf/timestamp.proto` to the command).
+- Create a pom file:
+    ```xml
+    <?xml version="1.0" encoding="UTF-8"?>
+    <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+      <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>hedwig-firehose-dataflow</artifactId>
+    <version>0.1</version>
+
+      <dependencies>
+        <dependency>
+          <groupId>io.github.cloudchacho</groupId>
+          <artifactId>hedwig-firehose-dataflow</artifactId>
+          <version>0.4</version>
+        </dependency>
+      </dependencies>
+
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.0.0</version>
+            <configuration>
+              <includeProjectDependencies>true</includeProjectDependencies>
+              <mainClass>io.github.cloudchacho.hedwig.Firehose</mainClass>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </project>
+    ```
 - Deploy your template using the following command, adjusting variables as necessary:
     ```shell
     DATAFLOW_BUCKET=<...>
     FIREHOSE_BUCKET=<...>
     REGION="us-central1"
-    VERSION=<...>
 
-    firehose_location="gs://${FIREHOSE_BUCKET}/firehose"
+    version=$(mvn -q -Dexec.executable=echo -Dexec.args='${project.version}' --non-recursive exec:exec)    firehose_location="gs://${FIREHOSE_BUCKET}/firehose"
     dataflow_bucket="gs://${DATAFLOW_BUCKET}"
-    dataflow_template="${dataflow_bucket}/templates/hedwig-firehose-v${VERSION}"
+    dataflow_template="${dataflow_bucket}/templates/hedwig-firehose-v${version}"
     dataflow_temp="${dataflow_bucket}/temp"
     dataflow_staging="${dataflow_bucket}/stage"
     schema_file="${dataflow_bucket}/schemas/schema-v1"
@@ -76,7 +109,7 @@ gsutil cat gs://${OUTPUT_FILE} | \
     --inputSubscriptionsCrossProject=<...> \
     --schemaFileDescriptorSetFile=${schema_file}"
 
-    mvn compile exec:java -Dexec.mainClass=io.github.cloudchacho.hedwig.Firehose -Dexec.args="$args"
+    mvn compile exec:java -Dexec.args="$args"
     ```
 
     To enable debug logging, add:

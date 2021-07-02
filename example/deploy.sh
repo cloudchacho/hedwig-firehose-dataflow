@@ -2,7 +2,7 @@
 
 set -eu
 
-version="0.3"
+version=$(mvn -q -Dexec.executable=echo -Dexec.args='${project.version}' --non-recursive exec:exec)
 firehose_location="gs://${FIREHOSE_BUCKET}/firehose"
 dataflow_bucket="gs://${DATAFLOW_BUCKET}"
 dataflow_template="${dataflow_bucket}/templates/hedwig-firehose-v${version}"
@@ -24,6 +24,4 @@ args="\
 --inputSubscriptionsCrossProject=hedwig-firehose-other-project-dev-user-created-v1;other-project \
 --schemaFileDescriptorSetFile=${schema_file}"
 
-pushd ..
-mvn compile exec:java -Dexec.mainClass=io.github.cloudchacho.hedwig.Firehose -Dexec.args="$args"
-popd
+mvn compile exec:java -Dexec.args="$args"
