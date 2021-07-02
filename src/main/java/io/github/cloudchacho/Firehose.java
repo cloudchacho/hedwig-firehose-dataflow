@@ -11,10 +11,8 @@ import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineResult;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
-import org.apache.beam.sdk.io.Compression;
-import org.apache.beam.sdk.io.FileBasedSink;
-import org.apache.beam.sdk.io.FileIO;
-import org.apache.beam.sdk.io.TextIO;
+import org.apache.beam.sdk.io.*;
+import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessage;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
@@ -30,6 +28,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -133,32 +134,73 @@ public class Firehose {
     private static final ObjectMapper mapper = new ObjectMapper();
 
     private static class ProtobufDecoder extends SimpleFunction<PubsubMessage, KV<String, String>> {
-        private final String projectId;
-        private final List<Message> protoMessages;
+        private final ValueProvider<String> projectId;
+        private final ValueProvider<String> schemaFileDescriptorSetFile;
 
         transient private static JsonFormat.TypeRegistry typeRegistry;
         transient private static final Map<String, Map<Integer, Message>> schemaClasses = new HashMap<>();
 
-        private ProtobufDecoder(String projectId, List<Message> protoMessages) {
-            this.projectId = projectId;
-            this.protoMessages = protoMessages;
+        private ProtobufDecoder(String projectId, ValueProvider<String> schemaFileDescriptorSetFile) {
+            this.projectId = ValueProvider.StaticValueProvider.of(projectId);
+            this.schemaFileDescriptorSetFile = schemaFileDescriptorSetFile;
         }
 
-        private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-            in.defaultReadObject();
+        private ProtobufDecoder(ValueProvider<String> projectId, ValueProvider<String> schemaFileDescriptorSet) {
+            this.projectId = projectId;
+            this.schemaFileDescriptorSetFile = schemaFileDescriptorSet;
+        }
+
+        private void ensureSchema() {
+            if (typeRegistry != null) {
+                return;
+            }
+
+            LOG.debug("schema not read yet, reading now");
 
             JsonFormat.TypeRegistry.Builder builder = JsonFormat.TypeRegistry.newBuilder()
                 .add(Value.getDescriptor());
-            for (Message protoMessage : this.protoMessages) {
-                Descriptors.Descriptor descriptor = protoMessage.getDescriptorForType();
-                Options.MessageOptions msgOptions =
-                    descriptor.getOptions().getExtension(Options.messageOptions);
 
-                builder.add(protoMessage.getDescriptorForType());
-                schemaClasses.putIfAbsent(msgOptions.getMessageType(), new HashMap<>());
-                schemaClasses.get(msgOptions.getMessageType()).put(msgOptions.getMajorVersion(), protoMessage);
+            ExtensionRegistry extensionRegistry = ExtensionRegistry.newInstance();
+            Options.registerAllExtensions(extensionRegistry);
+
+            int messagesCount = 0;
+
+            try {
+                String file = schemaFileDescriptorSetFile.get();
+                if (file == null) {
+                    LOG.error("schemaFileDescriptorSetFile can't be null");
+                    throw new IllegalArgumentException("schemaFileDescriptorSetFile can't be null");
+                }
+                ResourceId resourceId = FileSystems.matchNewResource(file, false);
+                ReadableByteChannel channel = FileSystems.open(resourceId);
+                InputStream stream = Channels.newInputStream(channel);
+                byte[] fileDescriptorSetBytes = stream.readAllBytes();
+                DescriptorProtos.FileDescriptorSet fileDescriptorSet  = DescriptorProtos.FileDescriptorSet.parseFrom(fileDescriptorSetBytes, extensionRegistry);
+                List<Descriptors.FileDescriptor> dependencies = new ArrayList<>();
+                for (DescriptorProtos.FileDescriptorProto fileDescriptorProto : fileDescriptorSet.getFileList()) {
+                    Descriptors.FileDescriptor fileDescriptor = Descriptors.FileDescriptor.buildFrom(fileDescriptorProto, dependencies.toArray(new Descriptors.FileDescriptor[0]), false);
+                    dependencies.add(fileDescriptor);
+                    for (Descriptors.Descriptor messageDescriptor : fileDescriptor.getMessageTypes()) {
+                        // filter to only Hedwig messages
+                        if (messageDescriptor.getOptions().hasExtension(Options.messageOptions)) {
+                            DynamicMessage.Builder msg = DynamicMessage.newBuilder(messageDescriptor);
+                            builder.add(messageDescriptor);
+                            Options.MessageOptions msgOptions =
+                                messageDescriptor.getOptions().getExtension(Options.messageOptions);
+                            schemaClasses.putIfAbsent(msgOptions.getMessageType(), new HashMap<>());
+                            schemaClasses.get(msgOptions.getMessageType())
+                                .put(msgOptions.getMajorVersion(), msg.getDefaultInstanceForType());
+                            ++messagesCount;
+                        }
+                    }
+                }
+                typeRegistry = builder.build();
+            } catch (IOException|Descriptors.DescriptorValidationException e) {
+                String msg = String.format("Unable to read schemaFileDescriptorSet at %s", schemaFileDescriptorSetFile.get());
+                LOG.error(msg, e);
+                throw new IllegalArgumentException(msg);
             }
-            typeRegistry = builder.build();
+            LOG.debug(String.format("Read %d Hedwig message types from schema", messagesCount));
         }
 
         /**
@@ -184,78 +226,93 @@ public class Firehose {
                 groupId = unknownMessageGroupId;
             }
 
-            Map<String, String> attributes = new HashMap<>(input.getAttributeMap());
+            Container.PayloadV1 msg = null;
+            if (input.getAttributeMap() != null) {
+                Map<String, String> attributes = new HashMap<>(input.getAttributeMap());
+                Container.MetadataV1.Builder metadataBuilder = Container.MetadataV1.newBuilder();
+                String value = attributes.remove("hedwig_publisher");
+                if (value != null) {
+                    metadataBuilder.setPublisher(value);
+                }
+                value = attributes.remove("hedwig_message_timestamp");
+                if (value != null) {
+                    try {
+                        long millis = Long.parseLong(value);
+                        Timestamp timestamp = Timestamp.newBuilder().setSeconds(millis / 1000)
+                            .setNanos((int) ((millis % 1000) * 1000000)).build();
+                        metadataBuilder.setTimestamp(timestamp);
+                    } catch (NumberFormatException ignored) {}
+                }
 
-            Container.MetadataV1.Builder metadataBuilder = Container.MetadataV1.newBuilder();
-            String value = attributes.remove("hedwig_publisher");
-            if (value != null) {
-                metadataBuilder.setPublisher(value);
-            }
-            value = attributes.remove("hedwig_message_timestamp");
-            if (value != null) {
-                try {
-                    long millis = Long.parseLong(value);
-                    Timestamp timestamp = Timestamp.newBuilder().setSeconds(millis / 1000)
-                        .setNanos((int) ((millis % 1000) * 1000000)).build();
-                    metadataBuilder.setTimestamp(timestamp);
-                } catch (NumberFormatException ignored) {}
-            }
+                Container.PayloadV1.Builder builder = Container.PayloadV1.newBuilder();
+                value = attributes.remove("hedwig_format_version");
+                if (value != null) {
+                    builder.setFormatVersion(value);
+                }
+                value = attributes.remove("hedwig_id");
+                if (value != null) {
+                    builder.setId(value);
+                }
+                value = attributes.remove("hedwig_schema");
+                if (value != null) {
+                    builder.setSchema(value);
+                }
+                metadataBuilder.putAllHeaders(attributes);
+                builder.setMetadata(metadataBuilder);
+                builder.setData(Any.pack(data));
 
-            Container.PayloadV1.Builder builder = Container.PayloadV1.newBuilder();
-            value = attributes.remove("hedwig_format_version");
-            if (value != null) {
-                builder.setFormatVersion(value);
+                msg = builder.build();
             }
-            value = attributes.remove("hedwig_id");
-            if (value != null) {
-                builder.setId(value);
-            }
-            value = attributes.remove("hedwig_schema");
-            if (value != null) {
-                builder.setSchema(value);
-            }
-            metadataBuilder.putAllHeaders(attributes);
-            builder.setMetadata(metadataBuilder);
-            builder.setData(Any.pack(data));
-
-            Container.PayloadV1 msg = builder.build();
 
             String output;
-            try {
-                output = JsonFormat.printer()
-                    .omittingInsignificantWhitespace()
-                    .preservingProtoFieldNames()
-                    .usingTypeRegistry(typeRegistry)
-                    .print(msg);
-                // XXX: workaround for https://github.com/protocolbuffers/protobuf/issues/7273
-                for (Map.Entry<String, String> replacement : HTML_SAFE_REPLACEMENT_CHARS.entrySet()) {
-                    output = output.replaceAll(replacement.getKey(), replacement.getValue());
-                }
-            } catch (InvalidProtocolBufferException e) {
-                // should never happen?
-                LOG.warn("Failed to convert to JSON for: {}", groupId);
-                if (data instanceof Value) {
-                    // data is already an unknown value, serialization still failed: try with plain JSON serializer
-                    try {
-                        output = mapper.writeValueAsString(msg);
-                    } catch (JsonProcessingException jsonProcessingException) {
-                        // still failed! booo.. last fallback, hand written JSON:
-                        output = String.format("{" +
-                                "\"pubsub_message_id\":\"%s\"," +
-                                "\"message_type\":\"%s\"," +
-                                "\"payload\":\"%s\"," +
-                                "\"error\":\"Failed to serialize\"" +
-                            "}",
-                            input.getMessageId(),
-                            groupId,
-                            encoder.encodeToString(input.getPayload())
-                        );
+            if (msg != null) {
+                try {
+                    output = JsonFormat.printer()
+                        .omittingInsignificantWhitespace()
+                        .preservingProtoFieldNames()
+                        .usingTypeRegistry(typeRegistry)
+                        .print(msg);
+                    // XXX: workaround for https://github.com/protocolbuffers/protobuf/issues/7273
+                    for (Map.Entry<String, String> replacement : HTML_SAFE_REPLACEMENT_CHARS.entrySet()) {
+                        output = output.replaceAll(replacement.getKey(), replacement.getValue());
                     }
-                } else {
-                    return this.packInContainer(null, groupId, input);
+                } catch (InvalidProtocolBufferException e) {
+                    // should never happen?
+                    LOG.warn("Failed to convert to JSON for: {}", groupId);
+                    if (data instanceof Value) {
+                        // data is already an unknown value, serialization still failed: try with plain JSON serializer
+                        try {
+                            output = mapper.writeValueAsString(msg);
+                        } catch (JsonProcessingException jsonProcessingException) {
+                            // still failed! booo.. last fallback, hand written JSON:
+                            output = String.format("{" +
+                                    "\"pubsub_message_id\":\"%s\"," +
+                                    "\"message_type\":\"%s\"," +
+                                    "\"payload\":\"%s\"," +
+                                    "\"error\":\"Failed to serialize\"" +
+                                    "}",
+                                input.getMessageId(),
+                                groupId,
+                                encoder.encodeToString(input.getPayload())
+                            );
+                        }
+                    } else {
+                        return this.packInContainer(null, groupId, input);
+                    }
                 }
+            } else {
+                output = String.format("{" +
+                        "\"pubsub_message_id\":\"%s\"," +
+                        "\"message_type\":\"%s\"," +
+                        "\"payload\":\"%s\"," +
+                        "\"error\":\"No attributes found, can't decode data\"" +
+                        "}",
+                    input.getMessageId(),
+                    groupId,
+                    encoder.encodeToString(input.getPayload())
+                );
             }
-            return KV.of(String.format("%s/%s", projectId, groupId), output);
+            return KV.of(String.format("%s/%s", projectId.get(), groupId), output);
         }
 
         private KV<String, String> packInContainer(PubsubMessage input) {
@@ -277,6 +334,8 @@ public class Firehose {
         public KV<String, String> apply(PubsubMessage input) {
             // assume that transport message attributes are in use
             // attributes that must be set already, if not set that's a fail
+
+            ensureSchema();
 
             String schema = input.getAttribute("hedwig_schema");
             if (schema == null || schema.equals("")) {
@@ -328,19 +387,9 @@ public class Firehose {
 
     /**
      * Runs the pipeline with the supplied options.
-     *  @param args List of command line arguments
-     * @param protoMessages List of proto message objects - these may be empty
+     * @param options runtime options
      */
-    public static PipelineResult run(String[] args, List<Message> protoMessages) throws IllegalArgumentException {
-        RuntimeOptions options = PipelineOptionsFactory
-            .fromArgs(args)
-            .withValidation()
-            .as(RuntimeOptions.class);
-
-        options.setJobName("hedwig-firehose");
-        options.setStreaming(true);
-        options.setRunner(DataflowRunner.class);
-
+    private static PipelineResult run(RuntimeOptions options) {
         // Create the pipeline
         Pipeline pipeline = Pipeline.create(options);
 
@@ -366,7 +415,7 @@ public class Firehose {
             PCollection<KV<String, String>> messages = pipeline
                 .apply("Read " + topicName,
                     PubsubIO.readMessagesWithAttributesAndMessageId().fromSubscription(subId))
-                .apply("Decode " + topicName, MapElements.via(new ProtobufDecoder(options.getProject(), protoMessages)));
+                .apply("Decode " + topicName, MapElements.via(new ProtobufDecoder(options.getProject(), options.getSchemaFileDescriptorSetFile())));
             pCollections.add(messages);
         }
 
@@ -384,7 +433,7 @@ public class Firehose {
             PCollection<KV<String, String>> messages = pipeline
                 .apply("Read " + subDisplayName,
                     PubsubIO.readMessagesWithAttributesAndMessageId().fromSubscription(subId))
-                .apply("Decode " + subDisplayName, MapElements.via(new ProtobufDecoder(otherProjectId, protoMessages)));
+                .apply("Decode " + subDisplayName, MapElements.via(new ProtobufDecoder(otherProjectId, options.getSchemaFileDescriptorSetFile())));
             pCollections.add(messages);
         }
 
@@ -415,6 +464,23 @@ public class Firehose {
 
         // Execute the pipeline and return the result.
         return pipeline.run();
+    }
+
+    public static void main(String[] args) throws IllegalArgumentException {
+        PipelineOptionsFactory.register(RuntimeOptions.class);
+
+        RuntimeOptions options = PipelineOptionsFactory
+            .fromArgs(args)
+            .withValidation()
+            .as(RuntimeOptions.class);
+
+        options.setJobName("hedwig-firehose");
+        options.setStreaming(true);
+        options.setRunner(DataflowRunner.class);
+
+        PipelineResult result = Firehose.run(options);
+        // ignore result?
+        System.exit(0);
     }
 
     /**

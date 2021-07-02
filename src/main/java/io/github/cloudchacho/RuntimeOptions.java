@@ -37,6 +37,10 @@ public interface RuntimeOptions extends DataflowPipelineOptions {
     List<String> getInputSubscriptionsCrossProject();
     void setInputSubscriptionsCrossProject(List<String> value);
 
+    @Description("The FileDescriptorSet for the schema, stored on GCS")
+    ValueProvider<String> getSchemaFileDescriptorSetFile();
+    void setSchemaFileDescriptorSetFile(ValueProvider<String> value);
+
     @Description("The directory to output files to. Must end with a slash.")
     @Validation.Required
     ValueProvider<String> getOutputDirectory();

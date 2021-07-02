@@ -37,3 +37,50 @@ gsutil cat gs://${OUTPUT_FILE} | \
     protoc --decode hedwig.VisitCreatedV1 --proto_path=/usr/local/lib/protobuf/include --proto_path=$(dirname ${SCHEMA_FILE}) ${SCHEMA_FILE}; \
   done;
 ```
+
+## Deploying
+
+- Install `protoc`
+- Install Hedwig custom options:
+    ```shell
+    git clone https://github.com/cloudchacho/hedwig.git /usr/local/lib/protobuf/include/hedwig
+    ```
+- Define your Hedwig schema in one or more files.
+- Compile all the files in your schema into a fileDescriptorSet file:
+    ```shell
+    protoc --descriptor_set_out=schema-v1 -I /usr/local/lib/protobuf/include/ hedwig/protobuf/options.proto google/protobuf/descriptor.proto <SCHEMA FILES...>
+    ```
+- Deploy your template using the following command, adjusting variables as necessary:
+    ```shell
+    DATAFLOW_BUCKET=<...>
+    FIREHOSE_BUCKET=<...>
+    REGION="us-central1"
+    VERSION=<...>
+
+    firehose_location="gs://${FIREHOSE_BUCKET}/firehose"
+    dataflow_bucket="gs://${DATAFLOW_BUCKET}"
+    dataflow_template="${dataflow_bucket}/templates/hedwig-firehose-v${VERSION}"
+    dataflow_temp="${dataflow_bucket}/temp"
+    dataflow_staging="${dataflow_bucket}/stage"
+    schema_file="${dataflow_bucket}/schemas/schema-v1"
+    args="\
+    --runner=DataflowRunner \
+    --project=${GCP_PROJECT} \
+    --stagingLocation=${dataflow_staging} \
+    --templateLocation=${dataflow_template} \
+    --region=${REGION} \
+    --tempLocation=${dataflow_temp} \
+    --userTempLocation=${dataflow_bucket}/tmp/ \
+    --outputDirectory=${firehose_location} \
+    --inputSubscriptions=<...> \
+    --inputSubscriptionsCrossProject=<...> \
+    --schemaFileDescriptorSetFile=${schema_file}"
+
+    mvn compile exec:java -Dexec.mainClass=io.github.cloudchacho.Firehose -Dexec.args="$args"
+    ```
+
+    To enable debug logging, add:
+    ```shell
+    --workerLogLevelOverrides='{\"io.cloudchacho.hedwig.Firehose\":\"DEBUG\"}'
+    ```
+    to `args`.
