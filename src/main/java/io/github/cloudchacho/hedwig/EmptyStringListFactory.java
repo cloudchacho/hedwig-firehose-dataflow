@@ -1,4 +1,4 @@
-package io.github.cloudchacho;
+package io.github.cloudchacho.hedwig;
 
 import org.apache.beam.sdk.options.DefaultValueFactory;
 import org.apache.beam.sdk.options.PipelineOptions;

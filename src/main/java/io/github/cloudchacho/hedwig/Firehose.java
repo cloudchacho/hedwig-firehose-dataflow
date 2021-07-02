@@ -1,7 +1,5 @@
-package io.github.cloudchacho;
+package io.github.cloudchacho.hedwig;
 
-import io.github.cloudchacho.hedwig.Container;
-import io.github.cloudchacho.hedwig.Options;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.*;
@@ -60,7 +58,7 @@ import java.util.regex.Pattern;
  --outputDirectory=gs://${PROJECT_ID}/output/ \
  --region=${REGION} \
  --zone=${ZONE} \
- --workerLogLevelOverrides='{\"io.github.cloudchacho.Firehose\":\"DEBUG\"}'"
+ --workerLogLevelOverrides='{\"io.github.cloudchacho.hedwig.Firehose\":\"DEBUG\"}'"
  * </pre>
  */
 public class Firehose {

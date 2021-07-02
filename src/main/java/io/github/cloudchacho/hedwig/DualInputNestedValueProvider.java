@@ -13,7 +13,7 @@
  * License for the specific language governing permissions and limitations under
  * the License.
  */
-package io.github.cloudchacho;
+package io.github.cloudchacho.hedwig;
 
 import com.google.common.base.MoreObjects;
 import java.io.Serializable;

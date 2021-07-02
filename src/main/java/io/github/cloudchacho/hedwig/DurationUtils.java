@@ -15,7 +15,7 @@
  */
 
 
-package io.github.cloudchacho;
+package io.github.cloudchacho.hedwig;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;

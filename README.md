@@ -76,7 +76,7 @@ gsutil cat gs://${OUTPUT_FILE} | \
     --inputSubscriptionsCrossProject=<...> \
     --schemaFileDescriptorSetFile=${schema_file}"
 
-    mvn compile exec:java -Dexec.mainClass=io.github.cloudchacho.Firehose -Dexec.args="$args"
+    mvn compile exec:java -Dexec.mainClass=io.github.cloudchacho.hedwig.Firehose -Dexec.args="$args"
     ```
 
     To enable debug logging, add:

@@ -2,7 +2,7 @@
 
 set -eu
 
-version="0.2"
+version="0.3"
 firehose_location="gs://${FIREHOSE_BUCKET}/firehose"
 dataflow_bucket="gs://${DATAFLOW_BUCKET}"
 dataflow_template="${dataflow_bucket}/templates/hedwig-firehose-v${version}"
@@ -19,11 +19,11 @@ args="\
 --tempLocation=${dataflow_temp} \
 --userTempLocation=${dataflow_bucket}/tmp/ \
 --outputDirectory=${firehose_location} \
---workerLogLevelOverrides='{\"io.cloudchacho.hedwig.Firehose\":\"DEBUG\"}' \
+--workerLogLevelOverrides='{\"io.github.cloudchacho.hedwig.Firehose\":\"DEBUG\"}' \
 --inputSubscriptions=hedwig-firehose-dev-user-created-v1 \
 --inputSubscriptionsCrossProject=hedwig-firehose-other-project-dev-user-created-v1;other-project \
 --schemaFileDescriptorSetFile=${schema_file}"
 
 pushd ..
-mvn compile exec:java -Dexec.mainClass=io.github.cloudchacho.Firehose -Dexec.args="$args"
+mvn compile exec:java -Dexec.mainClass=io.github.cloudchacho.hedwig.Firehose -Dexec.args="$args"
 popd
