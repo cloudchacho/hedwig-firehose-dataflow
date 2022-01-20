@@ -117,3 +117,16 @@ gsutil cat gs://${OUTPUT_FILE} | \
     --workerLogLevelOverrides='{\"io.cloudchacho.hedwig.Firehose\":\"DEBUG\"}'
     ```
     to `args`.
+
+## Development
+
+Releasing new version of this library:
+
+1. Make code changes, PR, and update version in pom.xml
+2. `mvn clean deploy -P release`
+3. Log onto Nexus: https://s01.oss.sonatype.org/#stagingRepositories
+4. Go to staging repositories
+5. Find the repository that contains the uploaded version (there would normally only be one)
+6. 'close' the repo
+7. Wait a few minutes
+8. 'release' the repo

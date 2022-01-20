@@ -30,8 +30,8 @@
     <scm>
         <connection>scm:git:git://github.com/cloudchacho/hedwig-firehose-dataflow.git</connection>
         <developerConnection>scm:git:ssh://git@github.com/cloudchacho/hedwig-firehose-dataflow.git</developerConnection>
-        <url>https://github.com/cloudchacho/hedwig-java</url>
-        <tag>v0.2</tag>
+        <url>https://github.com/cloudchacho/hedwig-firehose-dataflow</url>
+        <tag>v0.5</tag>
     </scm>
 
     <distributionManagement>
